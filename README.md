@@ -9,6 +9,23 @@
 
 RP2040 based GE885-PWB(A) (a.k.a. DanceDanceRevolution Link Kit, PS1 Memory Card reader for System 573) emulator
 
+## How to build
+
+### Pinout
+
+|Type|Pin: Name|RP2040-Zero|Note|
+|----|----------|----------|----|
+|PSX|1: Data|GP0||
+|PSX|2: Command|GP3||
+|PSX|3: 7V|||
+|PSX|4: GND|GND||
+|PSX|5: 3.3V|3V3||
+|PSX|6: Attention(1P)|GP14||
+|PSX|6: Attention(2P)|GP15||
+|PSX|7: Clock|GP2||
+|PSX|8: IRQ|-||
+|PSX|9: Acknowledge|GP8||
+
 ## Features
 
 ### Supported
