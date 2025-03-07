@@ -1,0 +1,5 @@
+{
+    "board": "rp2040:rp2040:waveshare_rp2040_zero",
+    "sketch": "GE885-Pico.ino",
+    "output": "./.build"
+}
