@@ -27,7 +27,12 @@
 #endif
 // #pragma endregion Pins
 
-#define PSX_MEMCARD_BLOCK_SIZE 128
+// Memory card block count (First block is used as Directory)
+#define PSX_MEMCARD_BLOCK_COUNTS 16
+// Memory card frames in a block (1 Block = 64 frames)
+#define PSX_MEMCARD_FRAMES_IN_BLOCK 64
+// Memory card frame size (128 bytes)
+#define PSX_MEMCARD_FRAME_SIZE 128
 #define PSX_TRANSFER_WAIT 20
 
 namespace PSX {
