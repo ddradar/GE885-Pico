@@ -1,6 +1,4 @@
-#include <Arduino.h>
-
-// #pragma region Pins
+#pragma region
 #ifndef PSX_DATA_PIN
 // PSX Data(MISO) Pin
 #define PSX_DATA_PIN 0
@@ -25,7 +23,7 @@
 // PSX Acknowledge Pin
 #define PSX_ACKNOWLEDGE_PIN 8
 #endif
-// #pragma endregion Pins
+#pragma endregion
 
 // Memory card block count (First block is used as Directory)
 #define PSX_MEMCARD_BLOCK_COUNTS 16
@@ -56,6 +54,7 @@ namespace PSX {
    * @brief Setup the pins for the PSX port.
    */
   void setup();
+
   /**
    * @brief Read the input from PS1 digital controller.
    * @param slot Slot number (`0`: Port 1, `1`: Port 2)
@@ -63,6 +62,7 @@ namespace PSX {
    * @return `true` if the input was read successfully, `false` otherwise
    */
   bool tryReadControllerInput(int slot, uint8_t* output);
+
   /**
    * @brief Read the data from PS1 memory card.
    * @param slot Slot number (`0`: Port 1, `1`: Port 2)
@@ -71,6 +71,7 @@ namespace PSX {
    * @return `true` if the input was read successfully, `false` otherwise
    */
   bool tryReadFromMemoryCard(int slot, int address, uint8_t* output);
+
   /**
    * @brief Write the data to PS1 memory card.
    * @param slot Slot number (`0`: Port 1, `1`: Port 2)

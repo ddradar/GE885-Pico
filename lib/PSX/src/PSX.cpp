@@ -10,61 +10,67 @@
 #include "PSX.h"
 
 namespace PSX {
-  volatile int __state = HIGH;
-  bool __isCompatibleMode = false;
+  // Private variables & functions
+  namespace {
+    volatile int __state = HIGH;
+    bool __isCompatibleMode = false;
 
-  /**
-   * @brief Acknowledge the PSX device
-   * @note This function is called when the PSX device sends an ACK signal
-   */
-  void __acknowledge() {
-    __state = !__state;
-  }
-
-  /**
-   * @brief Activate or deactivate slot
-   * @param slot Slot number (0: Port 1, 1: Port 2)
-   * @param status LOW to activate, HIGH to deactivate
-   */
-  void __attention(int slot, int status) {
-    if (slot == 0) {
-      digitalWrite(PSX_ATTENTION_PIN_1, status);
-    } else {
-      digitalWrite(PSX_ATTENTION_PIN_2, status);
+    /**
+     * @brief Acknowledge the PSX device
+     * @note This function is called when the PSX device sends an ACK signal
+     */
+    void __acknowledge() {
+      __state = !__state;
     }
-  }
 
-  /**
-   * @brief Send a command to the PSX port
-   * @param command Command to send
-   * @param timeOut ACK signal timeout in microseconds
-   * @param delay Delay in microseconds before sending the command
-   * @return Response from the PSX device
-   * @note Before sending a command, the attention signal must be set to LOW
-   */
-  uint8_t __sendCommand(uint8_t command, int timeOut, int delay) {
-    if (!__isCompatibleMode) timeOut = 3000;
-    __state = HIGH;
-
-    if (delay > 0) delayMicroseconds(delay);
-
-    uint8_t res = SPI.transfer(command);
-
-    // Wait for the ACK signal from the Memory Card
-    while (__state == HIGH) {
-      timeOut--;
-      delayMicroseconds(1);
-      if (timeOut == 0) {
-        // Timeout reached, card doesn't report ACK properly
-        __isCompatibleMode = true;
-        break;
+    /**
+     * @brief Activate or deactivate slot.
+     * @param slot Slot number (`0`: Port 1, `1`: Port 2)
+     * @param status `LOW` to activate, `HIGH` to deactivate
+     */
+    void __attention(int slot, int status) {
+      if (slot == 0) {
+        digitalWrite(PSX_ATTENTION_PIN_1, status);
+      } else {
+        digitalWrite(PSX_ATTENTION_PIN_2, status);
       }
     }
 
-    return res;
+    /**
+     * @brief Send a command to the PSX port.
+     * @param command Command to send
+     * @param timeOut ACK signal timeout in microseconds
+     * @param delay Delay in microseconds before sending the command
+     * @return Response from the PSX device
+     * @note Before sending a command, the attention signal must be set to `LOW`.
+     */
+    uint8_t __sendCommand(uint8_t command, int timeOut, int delay) {
+      if (!__isCompatibleMode) timeOut = 3000;
+      __state = HIGH;
+
+      if (delay > 0) delayMicroseconds(delay);
+
+      uint8_t res = SPI.transfer(command);
+
+      // Wait for the ACK signal from the Memory Card
+      while (__state == HIGH) {
+        timeOut--;
+        delayMicroseconds(1);
+        if (timeOut == 0) {
+          // Timeout reached, card doesn't report ACK properly
+          __isCompatibleMode = true;
+          break;
+        }
+      }
+
+      return res;
+    }
   }
 }
 
+/**
+ * @brief Setup the pins for the PSX port.
+ */
 void PSX::setup() {
   pinMode(PSX_ATTENTION_PIN_1, OUTPUT);
   pinMode(PSX_ATTENTION_PIN_2, OUTPUT);
@@ -88,6 +94,46 @@ void PSX::setup() {
 #endif
 }
 
+/**
+ * @brief Read the input from PS1 digital controller.
+ * @param slot Slot number (`0`: Port 1, `1`: Port 2)
+ * @param output Output buffer (2 bytes)
+ * @return `true` if the input was read successfully, `false` otherwise
+ */
+bool PSX::tryReadControllerInput(int slot, uint8_t *output) {
+  // Use ACK detection mode by default
+  __isCompatibleMode = false;
+
+  // Activate device
+  __attention(slot, LOW);
+  delayMicroseconds(PSX_TRANSFER_WAIT);
+
+  __sendCommand(Device::Controller, 300, 45);           // Access Controller
+  uint16_t id = __sendCommand('B', 300, 45)             // Read Command (Returns Controller ID LSB)
+                & (__sendCommand(0x00, 300, 45) << 8);  // Returns Controller ID MSB
+
+  bool connected = id == 0x5a41;  // 5a41: Digital Controller
+  if (connected) {
+    *output++ = __sendCommand(0x00, 200, 0);  // Returns Digital switches LSB
+    *output++ = __sendCommand(0x00, 200, 0);  // Returns Digital switches MSB
+  } else {
+    *output++ = 0x00;
+    *output++ = 0x00;
+  }
+
+  //Deactivate device
+  __attention(slot, HIGH);
+
+  return connected;
+}
+
+/**
+ * @brief Read the data from PS1 memory card.
+ * @param slot Slot number (`0`: Port 1, `1`: Port 2)
+ * @param address Address of sector (`0x00`-`0x3ff`)
+ * @param output Output buffer (128 bytes) if sets `nullptr`, this function only checks memory card availability.
+ * @return `true` if the input was read successfully, `false` otherwise
+ */
 bool PSX::tryReadFromMemoryCard(int slot, int address, uint8_t *output) {
   // Use ACK detection mode by default
   __isCompatibleMode = false;
@@ -127,6 +173,13 @@ bool PSX::tryReadFromMemoryCard(int slot, int address, uint8_t *output) {
   return status == 'G' && checksum == receivedSum;  // 'N': Bad checksum, 0xFF: Bad sector
 }
 
+/**
+ * @brief Write the data to PS1 memory card.
+ * @param slot Slot number (`0`: Port 1, `1`: Port 2)
+ * @param address Address of sector (0x00-0x3ff)
+ * @param input Input buffer (128 bytes)
+ * @return `true` if the input was written successfully, `false` otherwise
+ */
 bool PSX::tryWriteToMemoryCard(int slot, int address, uint8_t *input) {
   // Use ACK detection mode by default
   __isCompatibleMode = false;
@@ -157,31 +210,4 @@ bool PSX::tryWriteToMemoryCard(int slot, int address, uint8_t *input) {
   __attention(slot, HIGH);
 
   return status == 'G';  // 'N': Bad checksum, 0xFF: Bad sector
-}
-
-bool PSX::tryReadControllerInput(int slot, uint8_t *output) {
-  // Use ACK detection mode by default
-  __isCompatibleMode = false;
-
-  // Activate device
-  __attention(slot, LOW);
-  delayMicroseconds(PSX_TRANSFER_WAIT);
-
-  __sendCommand(Device::Controller, 300, 45);   // Access Controller
-  uint8_t lo = __sendCommand('B', 300, 45);     // Read Command (Returns Controller ID LSB)
-  uint8_t hi = __sendCommand(0x00, 300, 45);    // Returns Controller ID MSB
-  bool connected = (lo == 0x41 && hi == 0x5a);  // 5a41: Digital Controller
-
-  if (connected) {
-    *output++ = __sendCommand(0x00, 200, 0);  // Returns Digital switches LSB
-    *output++ = __sendCommand(0x00, 200, 0);  // Returns Digital switches MSB
-  } else {
-    *output++ = 0x00;
-    *output++ = 0x00;
-  }
-
-  //Deactivate device
-  __attention(slot, HIGH);
-
-  return connected;
 }
