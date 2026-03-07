@@ -1,8 +1,27 @@
 #include <Arduino.h>
 #include <PSX.h>
 #include <JVS.h>
+#include <Buffer.h>
+#include "Debug.h"
 
-#define BUFFER_SIZE 1024
+#pragma region Pin Definitions
+#ifndef JVS_SENSE_PIN
+// JVS sense Pin (USB VBUS)
+#define JVS_SENSE_PIN 7
+#endif
+#ifndef JVS_DATA_PLUS_PIN
+// JVS DATA+ Pin
+#define JVS_DATA_PLUS_PIN 5
+#endif
+#ifndef JVS_DATA_MINUS_PIN
+// JVS DATA- Pin
+#define JVS_DATA_MINUS_PIN 6
+#endif
+#ifndef JVS_TX_PIN
+// TX Pin (Unused)
+#define JVS_TX_PIN 4
+#endif
+#pragma endregion
 
 enum MemoryCardStatus {
   // Default value, also used after writing?
@@ -21,16 +40,19 @@ static const char *__ioId = "KONAMI CO.,LTD.;White I/O;Ver1.0;White I/O PCB";
 
 // private variables
 namespace {
-  JVS::Packet __requestPacket;
+  // Acknowledge packet (Device -> Host)
   JVS::Packet __acknowledgePacket;
+  JVS::Client __client = JVS::Client(Serial1, JVS_SENSE_PIN, JVS_DATA_MINUS_PIN, JVS_DATA_PLUS_PIN, JVS_TX_PIN);
 
+  // Memory card status
   int __status = MemoryCardStatus::Uninitialized;
 };
 
 
 void setup() {
+  D_SerialBegin(115200);
+  D_println("GE885-Pico Ver. 1.0");
   PSX::setup();
-  JVS::setup();
 }
 
 void loop() {
