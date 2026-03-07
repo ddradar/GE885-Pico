@@ -1,37 +1,7 @@
 #include "JVS.h"
-#include <HardwareSerial.h>
 
 namespace JVS {
-  // private
-  namespace {
-    /**
-     * @brief Internal received status (used in `isReceivedRequest`)
-     */
-    enum ReceiveStatus {
-      WaitSync = 0,
-      ReceivedSync = 1,
-      ReceivedMyNodeNo = 2,
-      ProcessingData = 3,
-      ProcessedData = 4,
-    };
-
-    /**
-     * @brief Serial port for JVS communication
-     */
-    SerialUART *__serial;
-
-    bool __isInitialized = false;
-    uint8_t __nodeNo = 0;
-
-    void __writeWithEscape(uint8_t data) {
-      if (data == SpecialChar::Sync || data == SpecialChar::Escape) {
-        __serial->write(SpecialChar::Escape);
-        data--;
-      }
-      __serial->write(data);
-    }
-  }
-
+#pragma region Packet
   Packet::Packet(uint8_t nodeNo) {
     this->nodeNo = nodeNo;
     this->length = 0;
@@ -44,6 +14,7 @@ namespace JVS {
    * @param data Byte to add
    */
   void Packet::add(uint8_t data) {
+    assert(this->length < JVS_MAX_DATA_SIZE);
     this->data[this->length] = data;
     this->length++;
     this->sum += data;
@@ -55,8 +26,12 @@ namespace JVS {
    * @param length Length of the byte array
    */
   void Packet::add(uint8_t *data, uint8_t length) {
+    assert(this->length + length <= JVS_MAX_DATA_SIZE);
     memcpy(this->data + this->length, data, length);
     this->length += length;
+    for (int i = 0; i < length; i++) {
+      this->sum += data[i];
+    }
   }
 
   /**
@@ -70,110 +45,153 @@ namespace JVS {
     }
     return (sum == this->sum);
   }
+#pragma endregion Packet
 
-  void setup() {
-    __serial = &Serial1;
-    __serial->setTX(JVS_TX_PIN);
-    __serial->setRX(JVS_DATA_PLUS_PIN);
+#pragma region Client
+  /**
+   * @brief Create a JVS Client.
+   * @param serial Serial port for JVS communication
+   * @param sensePin JVS Sense pin (USB VBUS pin 1)
+   * @param dataMinusPin JVS DATA- pin (USB pin 2)
+   * @param dataPlusPin JVS DATA+ pin (USB pin 3)
+   * @param txPin TX pin (Unused)
+   */
+  Client::Client(SerialUART &serial, pin_size_t sensePin, pin_size_t dataMinusPin, pin_size_t dataPlusPin, pin_size_t txPin) {
+    this->__serial = &serial;
+    this->__sensePin = sensePin;
+    this->__dataMinusPin = dataMinusPin;
 
-    pinMode(JVS_SENSE_PIN, INPUT);
-    pinMode(JVS_DATA_MINUS_PIN, OUTPUT);
-    digitalWrite(JVS_SENSE_PIN, LOW);  // pullup to 5V (terminated)
-    digitalWrite(JVS_DATA_MINUS_PIN, LOW);
+    this->__serial->setTX(txPin);
+    this->__serial->setRX(dataPlusPin);
 
-    __serial->begin(JVS_BAUD_RATE);
-    __isInitialized = true;
+    pinMode(sensePin, INPUT);
+    pinMode(dataMinusPin, OUTPUT);
+    digitalWrite(sensePin, LOW);  // pullup to 5V (terminated)
+    digitalWrite(dataMinusPin, LOW);
+
+    this->__serial->begin(JVS_BAUD_RATE);
+    this->__isInitialized = true;
   }
 
-  bool tryGetRequest(Packet &requestPacket) {
-    // Received escape character or not
-    static bool __escaped;
-    // Receive status
-    static int __phase;
-    // Processed packet.data count
-    static uint8_t __dataCount;
-
-    if (!__isInitialized) return false;
+  /**
+   * @brief Try to get a packet from the JVS serial port. received packet can be accessed via `getRequestPacket()`.
+   * @return True if a complete packet was received
+   * @note Until `tryGetRequest` returns true, `getRequestPacket()` returns an under construction packet.
+   */
+  bool Client::tryGetRequest() {
+    if (!this->__isInitialized) return false;
 
     // At least 5 bytes are needed ([SYNC], [Node No.], [Byte Count], [Data], [SUM])
-    int available = __serial->available();
-    if (__phase == ReceiveStatus::WaitSync && available < 5) return false;
+    int available = this->__serial->available();
+    if (this->__phase == ReceiveStatus::WaitSync && available < 5) return false;
 
     for (int i = 0; i < available; i++) {
-      uint8_t b = __serial->read();
+      uint8_t b = this->__serial->read();
       if (b == SpecialChar::Sync) {
         // Start of packet
-        __phase = ReceiveStatus::ReceivedSync;
-        __escaped = false;
+        this->__phase = ReceiveStatus::ReceivedSync;
+        this->__escaped = false;
         continue;
       }
       // Wait until [SYNC] is received
-      if (__phase == ReceiveStatus::WaitSync) continue;
+      if (this->__phase == ReceiveStatus::WaitSync) continue;
 
       // Escape & Unescape
       if (b == SpecialChar::Escape) {
-        __escaped = true;
+        this->__escaped = true;
         continue;
       }
-      if (__escaped) {
+      if (this->__escaped) {
         b++;
-        __escaped = false;
+        this->__escaped = false;
       }
 
-      switch (__phase) {
+      switch (this->__phase) {
         case ReceiveStatus::ReceivedSync:  // b is [Node No.]
           if (b != JVS_ADDRESS_BROADCAST && b != __nodeNo) {
             // Ignore packets not addressed to us
-            __phase = ReceiveStatus::WaitSync;
+            this->__phase = ReceiveStatus::WaitSync;
             return false;
           }
-          requestPacket = Packet(b);
-          __phase = ReceiveStatus::ReceivedMyNodeNo;
+          this->__requestPacket = Packet(b);
+          this->__phase = ReceiveStatus::ReceivedMyNodeNo;
           break;
         case ReceiveStatus::ReceivedMyNodeNo:  // b is [Byte Count]
-          requestPacket.length = b;
-          __dataCount = 0;
-          __phase = ReceiveStatus::ProcessingData;
+          this->__requestPacket.length = b;
+          this->__dataCount = 0;
+          this->__phase = ReceiveStatus::ProcessingData;
           break;
         case ReceiveStatus::ProcessingData:  // b is [Data]
-          requestPacket.data[__dataCount] = b;
-          if (requestPacket.length == __dataCount) __phase = ReceiveStatus::ProcessedData;
-          __dataCount++;
+          this->__requestPacket.data[this->__dataCount++] = b;
+          if (this->__requestPacket.length == this->__dataCount) this->__phase = ReceiveStatus::ProcessedData;
           break;
         case ReceiveStatus::ProcessedData:  // b is [SUM]
-          requestPacket.sum = b;
-          __phase = ReceiveStatus::WaitSync;
-          return requestPacket.validate();
+          this->__requestPacket.sum = b;
+          this->__phase = ReceiveStatus::WaitSync;
+          return this->__requestPacket.validate();
       }
     }
     // Reached end of buffer, continue on next loop
     return false;
   }
 
-  void reset() {
-    __nodeNo = 0;
-    pinMode(JVS_SENSE_PIN, INPUT);
-    __isInitialized = false;
+  /**
+   * @brief Get the request packet (after `tryGetRequest` returns true)
+   * @return Reference to the request packet
+   * @note Until `tryGetRequest` returns true, `getRequestPacket()` returns an under construction packet.
+   */
+  Packet &Client::getRequestPacket() {
+    return this->__requestPacket;
   }
 
-  void setAddress(uint8_t nodeNo) {
-    __nodeNo = nodeNo;
-    pinMode(JVS_SENSE_PIN, OUTPUT);  // Set to 0V
-    __isInitialized = true;
-  }
-
-  void sendPacket(Packet &packet) {
-    digitalWrite(JVS_DATA_MINUS_PIN, HIGH);  // RS485_TX
-
-    __serial->write(SpecialChar::Sync);
-    __serial->write(packet.nodeNo);  // [Node No.] never to be Sync or Escape (0-31, 0xff)
-    __writeWithEscape(packet.length);
-    for (int i = 0; i < packet.length; i++) {
-      __writeWithEscape(packet.data[i]);
+  /**
+   * @brief Set this Client's JVS Node No.
+   * @param nodeNo JVS Node No (0x00: Uninitialized, 0x01-0x1f: Valid Node No, 0xff: Broadcast)
+   * @note If you set `nodeNo` to `0x00`, it will be reset.
+   */
+  void Client::setAddress(uint8_t nodeNo) {
+    this->__nodeNo = nodeNo;
+    if (nodeNo == 0) {
+      // Reset to uninitialized
+      pinMode(this->__sensePin, INPUT);
+      this->__isInitialized = false;
+      return;
     }
-    __writeWithEscape(packet.sum);
-    __serial->flush();  // Wait for all data to be sent
-
-    digitalWrite(JVS_DATA_MINUS_PIN, LOW);  // RS485_RX
+    pinMode(this->__sensePin, OUTPUT);  // Set to 0V
+    this->__isInitialized = true;
   }
+
+  /**
+   * @brief Send an acknowledgement packet to host.
+   * @param packet Packet to send
+   */
+  void Client::sendPacket(Packet &packet) {
+    digitalWrite(this->__dataMinusPin, HIGH);  // RS485_TX
+
+    this->__serial->write(SpecialChar::Sync);
+    this->__serial->write(packet.nodeNo);  // [Node No.] never to be Sync or Escape (0-31, 0xff)
+    this->__writeWithEscape(packet.length);
+    for (int i = 0; i < packet.length; i++) {
+      this->__writeWithEscape(packet.data[i]);
+    }
+    this->__writeWithEscape(packet.sum);
+    this->__serial->flush();  // Wait for all data to be sent
+
+    digitalWrite(this->__dataMinusPin, LOW);  // RS485_RX
+  }
+
+  /**
+   * @brief Write a byte to the serial port with escape handling
+   * @param data Byte to write
+   * @note If the byte is `Sync` or `Escape`, it will be escaped by writing `Escape` first, then the byte minus 1.
+   * @note This function is used in `sendPacket` to write the packet data.
+   */
+  void Client::__writeWithEscape(uint8_t data) {
+    if (data == SpecialChar::Sync || data == SpecialChar::Escape) {
+      this->__serial->write(SpecialChar::Escape);
+      data--;
+    }
+    this->__serial->write(data);
+  }
+#pragma endregion Client
 };

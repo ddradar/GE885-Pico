@@ -1,25 +1,6 @@
 
 #include <Arduino.h>
 
-#pragma region
-#ifndef JVS_SENSE_PIN
-// JVS sense Pin (USB VBUS)
-#define JVS_SENSE_PIN 7
-#endif
-#ifndef JVS_DATA_PLUS_PIN
-// JVS DATA+ Pin
-#define JVS_DATA_PLUS_PIN 5
-#endif
-#ifndef JVS_DATA_MINUS_PIN
-// JVS DATA- Pin
-#define JVS_DATA_MINUS_PIN 6
-#endif
-#ifndef JVS_TX_PIN
-// TX Pin (Unused)
-#define JVS_TX_PIN 4
-#endif
-#pragma endregion
-
 #define JVS_BAUD_RATE 115200
 // Maximum data size (255 - sum)
 #define JVS_MAX_DATA_SIZE 254
@@ -219,18 +200,84 @@ namespace JVS {
     Busy = 0x04,
   };
 
-  void setup();
-
   /**
-   * @brief Try to get a packet from the JVS serial port. received packet is stored in `requestPacket`.
-   * @param requestPacket Received packet
-   * @return True if a complete packet was received
-   * @note Until `isReceivedRequest` returns true, `requestPacket` is being under construction.
+   * @brief JVS Device Client
    */
-  bool tryGetRequest(Packet &requestPacket);
+  class Client {
+  public:
+    /**
+     * @brief Create a JVS Client.
+     * @param serial Serial port for JVS communication
+     * @param sensePin JVS Sense pin (USB VBUS pin 1)
+     * @param dataMinusPin JVS DATA- pin (USB pin 2)
+     * @param dataPlusPin JVS DATA+ pin (USB pin 3)
+     * @param txPin TX pin (Unused)
+     */
+    Client(SerialUART &serial, pin_size_t sensePin, pin_size_t dataMinusPin, pin_size_t dataPlusPin, pin_size_t txPin);
 
-  void reset();
-  void setAddress(uint8_t nodeNo);
+    /**
+     * @brief Set this Client's JVS Node No.
+     * @param nodeNo JVS Node No (0x00: Uninitialized, 0x01-0x1f: Valid Node No, 0xff: Broadcast)
+     * @note If you set `nodeNo` to `0x00`, it will be reset.
+     */
+    void setAddress(uint8_t nodeNo = 0);
 
-  void sendPacket(Packet &packet);
+    /**
+     * @brief Try to get a packet from the JVS serial port. received packet can be accessed via `getRequestPacket()`.
+     * @return True if a complete packet was received
+     * @note Until `tryGetRequest` returns true, `getRequestPacket()` returns an under construction packet.
+     */
+    bool tryGetRequest();
+    /**
+     * @brief Get the request packet (after `tryGetRequest` returns true)
+     * @return Reference to the request packet
+     * @note Until `tryGetRequest` returns true, `getRequestPacket()` returns an under construction packet.
+     */
+    Packet &getRequestPacket();
+
+    /**
+     * @brief Send an acknowledgement packet to host.
+     * @param packet Packet to send
+     */
+    void sendPacket(Packet &packet);
+
+  private:
+    /**
+     * @brief Internal received status (used in `tryGetRequest`)
+     */
+    enum ReceiveStatus {
+      WaitSync = 0,
+      ReceivedSync = 1,
+      ReceivedMyNodeNo = 2,
+      ProcessingData = 3,
+      ProcessedData = 4,
+    };
+
+    // Serial port for JVS communication
+    SerialUART *__serial;
+    // JVS Sense pin (USB VBUS)
+    pin_size_t __sensePin;
+    // JVS DATA- pin
+    pin_size_t __dataMinusPin;
+    bool __isInitialized = false;
+    // JVS Node No provided by host
+    uint8_t __nodeNo = 0x00;
+
+    // Received escape character or not (used in `tryGetRequest()`)
+    bool __escaped;
+    // Receive status (used in `tryGetRequest()`)
+    int __phase;
+    // Processed `__requestPacket.data` count (used in `tryGetRequest()`)
+    uint8_t __dataCount;
+    // Packet to be received (accessed by `getRequestPacket()`)
+    Packet __requestPacket;
+
+    /**
+     * @brief Write a byte to the serial port with escape handling
+     * @param data Byte to write
+     * @note If the byte is `Sync` or `Escape`, it will be escaped by writing `Escape` first, then the byte minus 1.
+     * @note This function is used in `sendPacket` to write the packet data.
+     */
+    void __writeWithEscape(uint8_t data);
+  };
 }
